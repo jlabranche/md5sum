@@ -1,0 +1,245 @@
+#!/usr/bin/perl
+use strict;
+use warnings;
+
+use Data::Dumper;
+use Digest::MD5;
+use IO::Dirent qw{ readdirent DT_DIR DT_REG DT_LNK DT_SOCK DT_FIFO DT_REG};
+use Fcntl qw{:flock :mode};
+use Getopt::Long;
+
+use Data::Dumper;
+#get_options scalars
+my ($recursive,$reverse,$hash,$warn,$quiet,$check,$binary,$text) = (0,0,0,0,0,0,0);
+my ($cms, $version) = ("","");
+my ($file,$file_list);
+
+MAIN: {
+    get_options();
+    get_list();
+	if (defined($file_list) && scalar $file_list > 0) {
+        my $md5_list;
+        my $i = 0;
+		foreach my $file (keys $file_list) {
+            $i++;
+            unless ($check) {
+                unless ($hash) {
+                    print check_md5($file_list->{$file}->{'file'})." ".fix_path($file_list->{$file})."\n";
+                } else {
+					open(CONFIG, ">>", "TOSconfig/Whitelist.pm");
+                    if ($i == 1) {
+					    print CONFIG  "#$cms: $version\n";
+                    }
+                    if ($reverse) {
+                        print CONFIG "        '".fix_path($file_list->{$file})."' => ".check_md5($file_list->{$file}->{'file'}).",\n";
+                    } else {
+                        print CONFIG "        '".check_md5($file_list->{$file}->{'file'})."' => '".fix_path($file_list->{$file})."',\n";
+                    }
+                    close(CONFIG);
+                }
+            } else {
+                $md5_list->{$file} = check_md5($file_list->{$file}->{'file'});
+            }
+		}
+        if ($check) {
+            if (open(COMPARE, "<:perlio", $check)) {
+                my $md5_file_list;
+                my $line_num;
+                while (my $line = <COMPARE>) {
+                    $line_num++;
+                    chomp($line);
+                    my @ids = split(", ", $line);
+                    foreach my $id (@ids) {
+                        $md5_file_list->{$id} = $id;
+                    }
+                    if ($warn) {
+                        foreach my $id (@ids) {
+                            unless ($id =~ /^\d+$/) {
+                                print "$check line $line_num: '$id' not formated correctly\n";
+                            }
+                            $line =~ s/,//;
+                            $line =~ s/$id//;
+                            $line =~ s/\s//;
+                        }
+                        unless ($line =~ /^$/) {
+                            print "$check line $line_num: '$line' not formated correctly\n";
+                        }
+                    }
+                }
+                foreach my $md5 (keys $md5_list) {
+                    if (defined($md5_file_list->{$md5_list->{$md5}})) {
+                        unless ($quiet) {
+                            print $md5.": ".$md5_list->{$md5}." OK\n";
+                        }
+                    } else {
+                        print $md5.": ".$md5_list->{$md5}." Not Found\n";
+                    }
+                }
+            }
+        }
+	} else {
+        local $/ = undef;
+        my $digest = Digest::MD5->new();
+        my $buf = <STDIN>;
+        $digest->add($buf);
+        my $md5 = $digest->hexdigest;
+        print $md5." "."-\n";
+	}
+}
+sub get_list {
+	foreach my $Arg (@ARGV) {
+        unless ($recursive) {
+            if (-e $Arg) {
+                $file_list->{$Arg}->{file}  = $Arg;
+                $file_list->{$Arg}->{level} = 1;
+                $file_list->{$Arg}->{base} = $Arg;
+            }
+        } else {
+            find_valid_files($Arg) if -d $Arg; 
+        }
+    }
+}
+
+sub find_valid_files {
+    my $base = shift;
+    my $dir = shift || $base;
+    my $level = shift || 1;
+
+    opendir my $dh, $dir or do {
+        warn "Could not open ",$dir,": ",$!,"\n";
+        return;
+    };
+    for my $entry (readdirent($dh)) {
+        next if $entry->{name} =~ /^\.\.?$/;  ## skip . and ..
+        next if ($entry->{type} == DT_LNK);   #Skip soft links
+        next if ($entry->{type} == DT_FIFO);  #Skip named pipes
+        next if ($entry->{type} == DT_SOCK);  #Skip sockets
+
+        if( $entry->{type} == DT_DIR ) {
+            find_valid_files($base, $dir."/".$entry->{name}, $level + 1);
+            next;
+        }
+        if( $entry->{type} == DT_REG ) {
+           my @file_path = split("/",$dir."/".$entry->{name});
+           $file_list->{$dir."/".$entry->{name}}->{'base'}  = $base;
+           $file_list->{$dir."/".$entry->{name}}->{'level'} = $level;
+           $file_list->{$dir."/".$entry->{name}}->{'file'}  = $dir."/".$entry->{name};
+        }
+    }
+}
+sub get_options {
+    GetOptions (
+        "b|binary"    => \$binary,
+		"c|check=s"   => \$check,
+        "t|text"      => \$text,
+
+        "r|recursive" => \$recursive,
+        "reverse"     => \$reverse,
+        "cms=s"       => \$cms,
+        "version=s"   => \$version,
+        "h|hash"      => \$hash,
+		"quiet"       => \$quiet,
+		"w|warn"      => \$warn,
+
+		"help"        => \&help,
+		"v"           => \&version,
+	) || help();
+}
+
+sub help {
+    print "\033[2J";
+    print "\033[0;0H";
+    print qq{
+XXHASH(1)                        User Commands                       XXHASH(1)
+
+NAME
+       md5sum - compute and check md5 message digest
+
+SYNOPSIS
+       md5sum [OPTION]... [FILE]...
+
+DESCRIPTION
+       Print or check md5 (32-bit) checksums.  With no FILE, or when FILE is -, read standard input.
+           Press Ctrl+D to check the hash
+
+        -b, --binary 
+                read in binary mode
+
+        -c, --check
+                read md5 sums from a file, and compare them.
+                    put each md5 checksum on their own line.
+                    
+        -t, --text
+                read in text mode
+                    Note: There is no difference between binary and text mode option on GNU system.
+
+        -r, --recursive
+               Instead of looking for files, it will look for directories, and recursively scan them
+
+        --reverse
+               swaps the --hash results file_name, than checksum, rather than checksum => file_name
+
+        --cms ""
+               In the comment at the top of the information printed to the configuration file, It will print what you type
+
+        --version ""
+               In the comment at the top of the information printed to the configuration file, It will print what you type
+
+        -h, --hash
+               Change the output to be ready for insersion to a hash
+
+   The following three options are useful only when verifying checksums:
+        -q, --quiet
+                don't print OK for each succesfully verified file
+
+        -w, --warn
+                warn about improperly formated checksum lines
+
+        --help display this help and exit
+
+        -v output version information and exit
+};
+    exit(0);
+}
+sub version {
+    print qq{md5sum 1.0
+script coded by Jean L.};
+}
+sub fix_path {
+    my $path = shift;
+    my $file_path = $path->{'file'};
+    if ($path->{'file'} =~ "/") {
+       unless ($recursive) {
+           $file_path = (split("/", $path->{'file'}))[-1]
+       } else {
+           $file_path =~ s/$path->{'base'}\///;
+       }
+        return $file_path;
+    } else {
+        $file_path =~ s/$path->{'base'}\///;
+        return $file_path;
+    }
+}
+sub check_md5 {
+    my $file = shift;
+    return "Unable to find $file" unless -e $file;
+    if (defined($file)) {
+        if (open(FH, "<:raw:perlio", $file)) {
+            binmode(FH) if $binary && $text == 0;
+            flock(FH,LOCK_EX);
+            my $digest = Digest::MD5->new();
+            local $/ = undef;
+            my $buf = <FH>;
+            if (defined($buf)) {
+                $digest->add($buf);
+            }
+            my $md5 = $digest->hexdigest;
+            flock(FH,LOCK_UN);
+            close(FH);
+            return $md5;
+        } else {
+            return "Unable to open $file";
+        }
+	}
+    return
+}
