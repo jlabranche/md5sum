@@ -26,9 +26,9 @@ MAIN: {
                 unless ($hash) {
                     print check_md5($file_list->{$file}->{'file'})." ".fix_path($file_list->{$file})."\n";
                 } else {
-					open(CONFIG, ">>", "TOSconfig/Whitelist.pm");
+                        open(CONFIG, ">>", "List.pm");
                     if ($i == 1) {
-					    print CONFIG  "#$cms: $version\n";
+                        print CONFIG  "#$cms: $version\n";
                     }
                     if ($reverse) {
                         print CONFIG "        '".fix_path($file_list->{$file})."' => ".check_md5($file_list->{$file}->{'file'}).",\n";
